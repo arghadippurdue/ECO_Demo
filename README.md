@@ -17,7 +17,7 @@ Place them inside the base repository.
 ## **Setup the Conda Environment**  
 Create and activate the required conda environment:  
 ```bash
-conda env create -f eco_demo.yml -n eco_demo
+conda env create -f eco_demo.yaml -n eco_demo
 conda activate eco_demo
 ```  
 
