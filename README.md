@@ -1,7 +1,8 @@
 # ECO: Enabling Efficient Context-aware Multimodal AI on Intel NPUs
 
 ## Demo Video  
-[![Watch the demo](https://img.youtube.com/vi/dXbZ9i_pe9U/0.jpg)]([https://youtu.be/dXbZ9i_pe9U](https://youtu.be/9wRXog4LqbY))
+[![Watch the demo](https://img.youtube.com/vi/9wRXog4LqbY/0.jpg)](https://www.youtube.com/watch?v=9wRXog4LqbY)
+
 
 ## **Clone the Repository**  
 First, clone this repository to your local machine:  
