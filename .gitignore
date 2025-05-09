@@ -10,3 +10,4 @@ open_vino_ref.py
 *.onnx
 .vscode
 models_bkp/
+ov_model/
