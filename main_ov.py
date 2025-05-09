@@ -1045,10 +1045,10 @@ def main():
         start = time.time()
         torch.cuda.empty_cache()
         # Create dataloaders
-        train_loader, val_loader, commapprox = create_loaders(
-            DATASET, args.input, args.train_dir, args.val_dir, args.train_list, args.val_list,
-            args.shorter_side, args.crop_size, args.input_size, args.low_scale, args.high_scale,
-            args.normalise_params, args.batch_size, args.num_workers, args.ignore_label, args.input_size_d, args.inter)
+        # train_loader, val_loader, commapprox = create_loaders(
+        #     DATASET, args.input, args.train_dir, args.val_dir, args.train_list, args.val_list,
+        #     args.shorter_side, args.crop_size, args.input_size, args.low_scale, args.high_scale,
+        #     args.normalise_params, args.batch_size, args.num_workers, args.ignore_label, args.input_size_d, args.inter)
 
         if args.realtime:
             return run_realtime_inference(segmenter, args.input, 0, num_classes=args.num_classes,

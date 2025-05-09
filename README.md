@@ -3,103 +3,139 @@
 ## Demo Video  
 [![Watch the demo](https://img.youtube.com/vi/9wRXog4LqbY/0.jpg)](https://www.youtube.com/watch?v=9wRXog4LqbY)
 
-
 ## **Clone the Repository**  
 First, clone this repository to your local machine:  
 ```bash
 git clone https://github.com/arghadippurdue/ECO_Demo.git
 cd ECO_Demo
-```  
+````
 
-## **Download Required Model Files**  
-Download the **pretrained** and **ckpt** model folders from this link: **[\[Google Drive Link\]](https://drive.google.com/drive/folders/1QhG7iaNmm2w5e5Z1Yks-Sntn9zZ8zV5s?usp=sharing)**  
-Place them inside the base repository.  
+## **Download Required Model Files**
 
-## **Setup the Conda Environment**  
-Create and activate the required conda environment:  
+Download the **pretrained** and **ckpt** model folders from this link: **[$Google Drive Link$](https://drive.google.com/drive/folders/1QhG7iaNmm2w5e5Z1Yks-Sntn9zZ8zV5s?usp=sharing)**
+Place them inside the base repository.
+
+## **Setup the Conda Environment**
+
+Create and activate the required conda environment:
+
 ```bash
 conda env create -f eco_demo.yaml -n eco_demo
 conda activate eco_demo
-```  
+```
 
-## **Convert PyTorch Models to OpenVINO**  
-Before running the demo, convert the PyTorch models to OpenVINO format:  
+## **Convert PyTorch Models to OpenVINO**
+
+Before running the demo, convert the PyTorch models to OpenVINO format:
+
 ```bash
 mkdir ov_model
 python convert_and_compare_enc_dec.py
-```  
-This will convert the **B3** model.  
+```
 
-To convert other models (e.g., **B2**), modify the following lines inside `convert_and_compare_enc_dec.py`:  
+This will convert the **B3** model.
+
+To convert other models (e.g., **B2**), modify the following lines inside `convert_and_compare_enc_dec.py`:
 
 ```python
 backbone = 'mit_b3'
 ckpt_path = "ckpt/b3_train/model-best.pth.tar"
 ov_model_path = Path("ov_model/enc_dec_b3_torch_v1.xml")
-```  
+```
 
-Change **"b3"** to **"b2"**, then run the script again:  
+Change **"b3"** to **"b2"**, then run the script again:
+
 ```bash
 python convert_and_compare_enc_dec.py
-```  
+```
 
-Now, you have the necessary **OpenVINO models** for the demo.  
+Now, you have the necessary **OpenVINO models** for the demo.
 
 ---
 
-## **Run Method**  
-To execute the script, use the following command:  
+## **Hardware and Software Setup (Before Running the Demo)**
+
+1. **Open VSCode or the terminal as administrator.**
+2. **Install and open [HWINFO](https://www.hwinfo.com/) as administrator.**
+3. **Go to HWINFO settings and enable "Shared Memory"** as shown in the figure:
+![alt text](images/HWINFO_shared_mem.png)
+4. **Connect the Intel RealSense L515 using a USB 3.2 port** to the Laptop or NUC.
+5. **If the L515 is being connected for the first time**, update its firmware using the SDK.
+
+   * Use **firmware version 2.54.2**:
+     [Intel RealSense SDK v2.54.2](https://github.com/IntelRealSense/librealsense/releases/tag/v2.54.2)
+6. **Update the Intel NPU driver to version 32.0.100.3717** (this version has been tested).
+
+   * Download link: [Intel NPU Driver](https://www.intel.com/content/www/us/en/download/794734/848729/intel-npu-driver-windows.html)
+
+---
+
+## **Run Method**
+
+To execute the script, use the following command:
 
 ```bash
 python run.py <mode> <framework> --model <model> [--noise]
-```  
+```
 
-### **Positional Arguments:**  
-- **`mode`** → Specifies the data source. Choose from:  
-  - `L515` → Runs in real-time using the L515 sensor  
-  - `dataset` → Processes a pre-recorded dataset  
+### **Positional Arguments:**
 
-- **`framework`** → Defines the framework to be used. Options:  
-  - `torch` → Runs using PyTorch  
-  - `ov` → Runs using OpenVINO  
+* **`mode`** → Specifies the data source. Choose from:
 
-- **`--model`** (Required) → Specifies the model variant to use. Options:  
-  - `b0` → Uses `mit_b0` backbone  
-  - `b1` → Uses `mit_b1` backbone  
-  - `b2` → Uses `mit_b2` backbone  
-  - `b3` → Uses `mit_b3` backbone  
+  * `L515` → Runs in real-time using the L515 sensor
+  * `dataset` → Processes a pre-recorded dataset
 
-### **Optional Flags:**  
-- **`--noise`** → Enables noise augmentation during execution  
-- **`--depth`** → Enables depth processing (if not provided in step configuration)  
-- **`--device`** → Specifies the device to use (default: `CPU`)  
-- **`--experiment`** → Sets the experiment number (default: `0`)  
+* **`framework`** → Defines the framework to be used. Options:
 
-### **Example Usage:**  
-1. Running with a dataset using PyTorch and the `b0` model:  
+  * `torch` → Runs using PyTorch
+  * `ov` → Runs using OpenVINO
+
+* **`--model`** (Required) → Specifies the model variant to use. Options:
+
+  * `b0` → Uses `mit_b0` backbone
+  * `b1` → Uses `mit_b1` backbone
+  * `b2` → Uses `mit_b2` backbone
+  * `b3` → Uses `mit_b3` backbone
+
+### **Optional Flags:**
+
+* **`--noise`** → Enables noise augmentation during execution
+* **`--depth`** → Enables depth processing (if not provided in step configuration)
+* **`--device`** → Specifies the device to use (default: `CPU`)
+* **`--experiment`** → Sets the experiment number (default: `0`)
+
+### **Example Usage:**
+
+1. Running with a dataset using PyTorch and the `b0` model:
+
    ```bash
    python run.py dataset torch --model b0
-   ```  
-2. Running with the L515 sensor on OpenVINO, using the `b3` model with noise:  
+   ```
+2. Running with the L515 sensor on OpenVINO, using the `b3` model with noise:
+
    ```bash
    python run.py L515 ov --model b3 --noise
-   ```  
+   ```
 
 ---
 
-## **Predefined Step Configurations**  
-If you prefer not to manually specify each parameter, you can use the `--step` option with a value between `1` and `4`. Each step sets a predefined configuration:  
+## **Predefined Step Configurations**
+
+If you prefer not to manually specify each parameter, you can use the `--step` option with a value between `1` and `4`. Each step sets a predefined configuration:
 
 | **Step** | **Experiment** | **Mode** | **Framework** | **Model** | **Noise** | **Depth** | **Device** |
-|----------|--------------|----------|---------------|-----------|-----------|-----------|------------|
-| 1        | 1            | L515     | torch         | b2        | True      | True      | CPU        |
-| 2        | 2            | L515     | ov            | b2        | True      | True      | NPU        |
-| 3        | 3            | L515     | ov            | b2        | True      | False     | NPU        |
-| 4        | 4            | L515     | ov            | b3        | True      | False     | NPU        |  
+| -------- | -------------- | -------- | ------------- | --------- | --------- | --------- | ---------- |
+| 1        | 1              | L515     | torch         | b2        | True      | True      | CPU        |
+| 2        | 2              | L515     | ov            | b2        | True      | True      | NPU        |
+| 3        | 3              | L515     | ov            | b2        | True      | False     | NPU        |
+| 4        | 4              | L515     | ov            | b3        | True      | False     | NPU        |
 
-### **Usage with Step Option:**  
-Instead of specifying all the parameters manually, simply run:  
+### **Usage with Step Option:**
+
+Instead of specifying all the parameters manually, simply run:
+
 ```bash
 python run.py --step 1
-```  
-This command will override other positional arguments with the configuration defined for step 1.  
+```
+
+This command will override other positional arguments with the configuration defined for step 1.
