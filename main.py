@@ -37,10 +37,6 @@ sensor_struct = Struct(
     'read_off' / Int32un, 'read_size' / Int32un, 'read_count' / Int32un
 )
 
-mem = shared_memory.SharedMemory('Global\\HWiNFO_SENS_SM2')
-hdr = sensor_struct.parse(mem.buf[:sensor_struct.sizeof()])
-struct_fmt = struct.Struct('=III128s128s16sdddd')
-
 
 def get_arguments():
     """Parse all the arguments provided from the CLI.
@@ -92,8 +88,6 @@ def get_arguments():
                         help='model name')
     # parser.add_argument('--gpu', type=int, nargs='+', default=[1],
     #                     help='select gpu.')
-    parser.add_argument('--evaluate', action='store_true', default=False,
-                        help='If true, only validate segmentation.')
     parser.add_argument('--freeze-bn', type=bool, nargs='+', default=FREEZE_BN,
                         help='Whether to keep batch norm statistics intact.')
     parser.add_argument('--num-epoch', type=int, nargs='+', default=NUM_SEGM_EPOCHS,
@@ -134,8 +128,6 @@ def get_arguments():
                         help='Lamda for L1 norm.')
     # parser.add_argument('-t', '--bn-threshold', type=float, default=BN_threshold,
     #                     help='Threshold for slimming BNs.')
-    parser.add_argument('--backbone', default='mit_b1', type=str)
-
     # approx args
     parser.add_argument('--err-data', type=str, default='/home/kanchi/a/das169/ECHO/TokenFusion/',
                         help='path to error masks')
@@ -149,11 +141,12 @@ def get_arguments():
                         help='interpolation method')
 
     # ---------------------------
-    # New flag for realtime inference
+    # New flags
     # ---------------------------
+    parser.add_argument('--dataset', action='store_true', default=False,
+                        help='If true, only validate segmentation.')
     parser.add_argument('--realtime', action='store_true', default=False,
                         help='Run realtime inference using the Intel RealSense L515')
-
     parser.add_argument("--noise", type=str, default="0",
                         help="Noise level in images")
     parser.add_argument("--depth", action="store_true",
@@ -161,8 +154,78 @@ def get_arguments():
     parser.add_argument("--device", type=str, default="CPU",
                         help="Device to use for inference (CPU, GPU, NPU, etc.)")
     parser.add_argument("--experiment", type=str, default="0")
+    parser.add_argument('--backbone', default='mit_b2', type=str)
+    parser.add_argument('--reportpower', action='store_true', default=False,
+                        help='Report Power Using HWinfo')
+    parser.add_argument('--framework', default='ov', type=str)
     return parser.parse_args()
 
+
+def get_model():
+    model_map = {
+        "mit_b2": "ov_model/enc_dec_b2_torch_v1.xml",
+        "mit_b3": "ov_model/enc_dec_b3_torch_v1.xml"
+    }
+
+    backbone_key = args.backbone
+    # quantization = args.quantization
+
+    try:
+        model_path = model_map[backbone_key]
+        print(f"Compiling the model from: {model_path}")
+        return model_path
+    except KeyError:
+        raise ValueError(
+            f"Invalid combination: backbone='{args.backbone}', quantization='{args.quantization}'")
+
+
+def setup_hwinfo():
+    global hdr
+    global struct_fmt
+    global mem
+
+    sensor_struct = Struct(
+        'sig' / Int32un, 'ver' / Int32un, 'rev' / Int32un, 'poll' / Long,
+        'sens_off' / Int32un, 'sens_size' / Int32un, 'sens_count' / Int32un,
+        'read_off' / Int32un, 'read_size' / Int32un, 'read_count' / Int32un
+    )
+
+    mem = shared_memory.SharedMemory('Global\\HWiNFO_SENS_SM2')
+    hdr = sensor_struct.parse(mem.buf[:sensor_struct.sizeof()])
+    struct_fmt = struct.Struct('=III128s128s16sdddd')
+
+
+def get_cpu_power():
+    """
+    Returns (CPU Package Power, System Agent Power) in watts.
+    Either element may be None if the sensor isn’t found.
+    """
+    cpu_pkg = None
+    sys_agent = None
+
+    off, size, count = hdr.read_off, hdr.read_size, hdr.read_count
+    for i in range(count):
+        start = off + i * size
+        end = start + struct_fmt.size
+        r = struct_fmt.unpack(mem.buf[start:end])
+
+        label = r[3].split(b'\x00')[0].decode(errors='ignore')
+        unit = r[5].split(b'\x00')[0].decode('mbcs', errors='ignore')
+        if unit != "W":
+            continue
+
+        if label == "CPU Package Power":
+            cpu_pkg = r[6]
+        elif label == "System Agent Power":
+            sys_agent = r[6]
+
+        # Break early once we have both values
+        if cpu_pkg is not None and sys_agent is not None:
+            break
+
+    return cpu_pkg, sys_agent
+
+# ----------------------------------------------Dataset------------------------------------------------------
 
 def create_segmenter(num_classes, backbone):
     """Create Encoder; for now only ResNet [50,101,152]"""
@@ -171,7 +234,9 @@ def create_segmenter(num_classes, backbone):
     # assert(torch.cuda.is_available())
     # segmenter.to(gpu[0])
     segmenter.to('cpu')
-    # segmenter = torch.nn.DataParallel(segmenter)        ## AD: Found the issue. If commented, wrong output
+    if args.framework == "torch":
+        # AD: Found the issue. If commented, wrong output
+        segmenter = torch.nn.DataParallel(segmenter)
     # segmenter = DistributedDataParallel(wetr, device_ids=[-1], find_unused_parameters=True)
     return segmenter, param_groups
 
@@ -243,8 +308,8 @@ def create_loaders(dataset, inputs, train_dir, val_dir, train_list, val_list,
                        ignore_label=ignore_label)
     # DBG:
     # print(validset[0]['depth'].dtype)
-    print_log('Created train set {} examples, val set {} examples'.format(
-        len(trainset), len(validset)))
+    # print_log('Created train set {} examples, val set {} examples'.format(
+        # len(trainset), len(validset)))
     # Training and validation loaders
     train_loader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
                               pin_memory=True, drop_last=True)
@@ -269,118 +334,178 @@ def create_optimisers(lr_enc, lr_dec, mom_enc, mom_dec, wd_enc, wd_dec, param_en
 
 
 def load_ckpt(ckpt_path, ckpt_dict):
-    ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
-    for (k, v) in ckpt_dict.items():
-        if k in ckpt:
-            state_dict = ckpt[k]
-            # print(state_dict.keys())
-            # Remove "module." prefix if model was trained with DataParallel
-            new_state_dict = {k.removeprefix(
-                'module.'): v for k, v in state_dict.items()}
-            # print(new_state_dict.keys())
-            v.load_state_dict(new_state_dict, strict=True)
-            # print(v.state_dict().keys())
-            # v.load_state_dict(ckpt[k], strict=True)
-    best_val = ckpt.get('best_val', 0)
-    epoch_start = ckpt.get('epoch_start', 0)
-    return best_val, epoch_start
+
+    if args.framework == "torch":
+        ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+        for (k, v) in ckpt_dict.items():
+            if k in ckpt:
+                v.load_state_dict(ckpt[k], strict=False)
+        best_val = ckpt.get('best_val', 0)
+        epoch_start = ckpt.get('epoch_start', 0)
+        return best_val, epoch_start
+
+    elif args.framework == "ov":
+        ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+        for (k, v) in ckpt_dict.items():
+            if k in ckpt:
+                state_dict = ckpt[k]
+                # print(state_dict.keys())
+                # Remove "module." prefix if model was trained with DataParallel
+                new_state_dict = {k.removeprefix(
+                    'module.'): v for k, v in state_dict.items()}
+                # print(new_state_dict.keys())
+                v.load_state_dict(new_state_dict, strict=True)
+                # print(v.state_dict().keys())
+                # v.load_state_dict(ckpt[k], strict=True)
+        best_val = ckpt.get('best_val', 0)
+        epoch_start = ckpt.get('epoch_start', 0)
+        return best_val, epoch_start
 
 
-def train(segmenter, input_types, train_loader, optimizer, epoch,
-          segm_crit, freeze_bn, lamda, batch_size, print_loss=False):
-    """Training segmenter
+def validate_torch(segmenter, input_types, val_loader, epoch, num_classes=-1, save_image=0, commclass=None):
+    """Validate segmenter
 
     Args:
       segmenter (nn.Module) : segmentation network
-      train_loader (DataLoader) : training data iterator
-      optim_enc (optim) : optimiser for encoder
-      optim_dec (optim) : optimiser for decoder
+      val_loader (DataLoader) : training data iterator
       epoch (int) : current epoch
-      segm_crit (nn.Loss) : segmentation criterion
-      freeze_bn (bool) : whether to keep BN params intact
+      num_classes (int) : number of classes to consider
 
+    Returns:
+      Mean IoU (float)
     """
-    train_loader.dataset.set_stage('train')
-    segmenter.train()
-    if freeze_bn:
-        for module in segmenter.modules():
-            if isinstance(module, nn.BatchNorm2d):
-                module.eval()
-    batch_time = AverageMeter()
-    losses = AverageMeter()
-    example_ct = 0
-    # TODO: REPLACE WITH BATCH SIZE
-    n_steps_per_epoch = math.ceil(len(train_loader.dataset) / batch_size)
-    for i, sample in tqdm(enumerate(train_loader), total=len(train_loader)):
-        # print('train input:', sample['rgb'].shape, sample['depth'].shape, sample['mask'].shape)
-        start = time.time()
-        inputs = [sample[key].float() for key in input_types]
-        target = sample['mask'].long()
-        example_ct += len(sample)
-        # Compute outputs
-        outputs, masks = segmenter(inputs)
-        loss = 0
-        for output in outputs:
-            output = nn.functional.interpolate(output, size=target.size()[1:],
-                                               mode='bilinear', align_corners=False)
-            soft_output = nn.LogSoftmax()(output)
-            # Compute loss and backpropagate
-            loss += segm_crit(soft_output, target)
+    global best_iou
+    val_loader.dataset.set_stage('val')
+    segmenter.eval()
+    conf_mat = []
 
-        if lamda > 0:
-            L1_loss = 0
-            for mask in masks:
-                L1_loss += sum([torch.abs(m).sum() for m in mask])
-            loss += lamda * L1_loss
+    for _ in range(len(input_types) + 1):
+        conf_mat.append(np.zeros((num_classes, num_classes), dtype=int))
+    with torch.no_grad():
+        for i, sample in enumerate(val_loader):
+            # ## Arghadip: DBG for only a few inputs
+            # if i > 3:
+            # break
+            # print('valid input:', sample['rgb'].shape, sample['depth'].shape, sample['mask'].shape)
+            start = time.time()
+            # ## DBG: Arghadip
+            # print("RGB datatype from dataloader: ", sample['rgb'].dtype)      # --> float32
+            # print("Depth datatype from dataloader: ", sample['rgb'].dtype)    # --> float32
+            inputs = [sample[key].float() for key in input_types]
+            # print("RGB datatype before segmenter: ", inputs[0].dtype)         # --> float32
+            # print("Depth datatype before segmenter: ", inputs[1].dtype)       # --> float32
 
-        optimizer.zero_grad()
-        loss.backward()
-        if print_loss:
-            print('step: %-3d: loss=%.2f' % (i, loss), flush=True)
-        optimizer.step()
-        losses.update(loss.item())
-        batch_time.update(time.time() - start)
+            target = sample['mask']
+            gt = target[0].data.cpu().numpy().astype(np.uint8)
+            gt_idx = gt < num_classes  # Ignore every class index larger than the number of classes
 
-    portion_rgbs, portion_depths = [], []
-    for idx, mask in enumerate(masks):
-        portion_rgb = (mask[0] < 0.02).sum() / mask[0].flatten().shape[0]
-        portion_depth = (mask[1] < 0.02).sum() / mask[1].flatten().shape[0]
-        portion_rgbs.append(portion_rgb)
-        portion_depths.append(portion_depth)
-    portion_rgbs = sum(portion_rgbs) / len(portion_rgbs)
-    portion_depths = sum(portion_depths) / len(portion_depths)
-    print('Epoch %d, portion of scores<0.02 (rgb depth): %.2f%% %.2f%%' %
-          (epoch, portion_rgbs * 100, portion_depths * 100), flush=True)
+            start_time = time.time()  # Record the start time
 
-    metrics = {"train/train_loss": loss,
-               "train/epoch": epoch,
-               "train/example_ct": example_ct,
-               "train/portion_rgbs": portion_rgbs * 100,
-               "train/portion_depths": portion_depths * 100,
-               }
-    # log train metrics to wandb
-    # if i + 1 < n_steps_per_epoch:
-    #     wandb.log(metrics)
+            # Compute outputs
+            # outputs, alpha_soft = segmenter(inputs)
+            # outputs, _ = segmenter(inputs)
+            input1, input2 = inputs
+            outputs = segmenter(input1, input2)
+            # outputs = segmenter(inputs)
+
+            end_time = time.time()
+
+            if args.reportpower:
+                pkg_w, sa_w = get_cpu_power()
+                print(f"CPU Package: {pkg_w:.3f} W,  NPU: {sa_w:.3f} W")
+
+            iteration_time = end_time - start_time
+            print(
+                f"Iteration {i+1}/{len(val_loader.dataset)}: {iteration_time:.4f} seconds")
+
+            # DBG:
+            # compress_metrics = {'bytes_rgb': commclass.compress_size['rgb'],
+            #                     'bytes_depth': commclass.compress_size['depth'],
+            #                     'bytes_total': commclass.compress_size['total']
+            #                     #   'bytes_avg_rgb': commclass.compress_size['rgb']//654,
+            #                     #   'bytes_avg_depth': commclass.compress_size['depth']//654,
+            #                     #   'bytes_avg_total': commclass.compress_size['total']//654,
+            #                       }
+            # print(compress_metrics)
+
+            # if i == len(val_loader) - 1:
+            # ## DBG:
+            # # if i == 20:
+            #     compress_metrics = {'bytes_rgb': commclass.compress_size['rgb'],
+            #                       'bytes_depth': commclass.compress_size['depth'],
+            #                       'bytes_total': commclass.compress_size['total'],
+            #                       'bytes_avg_rgb': commclass.compress_size['rgb']//654,
+            #                       'bytes_avg_depth': commclass.compress_size['depth']//654,
+            #                       'bytes_avg_total': commclass.compress_size['total']//654,
+            #                       }
+            #     print(compress_metrics)
+            #     ## DBG:
+            #     # print(commclass.compress_size)
+            #     # print(commclass)
+            #     # wandb.log({**compress_metrics, **compress_metrics})
+            # if i == 0:
+            #     # measure flops
+            #     flops = FlopCountAnalysis(segmenter, inputs)
+            #     print(flops)
+            #     val_metrics = {
+            #                     'flops': flops.total(),
+            #                     'input_height': sample['rgb'].shape[2],
+            #                     'input_width': sample['rgb'].shape[3]
+            #                     }
+            #     wandb.log({**val_metrics, **val_metrics})
+
+            for idx, output in enumerate(outputs):
+                output = cv2.resize(output[0, :num_classes].data.cpu().numpy().transpose(1, 2, 0),
+                                    target.size()[1:][::-1],
+                                    interpolation=cv2.INTER_CUBIC).argmax(axis=2).astype(np.uint8)
+                # Compute IoU
+                iou = confusion_matrix(gt[gt_idx], output[gt_idx], num_classes)
+                conf_mat[idx] += iou
+                # conf_mat[idx] += confusion_matrix(gt[gt_idx], output[gt_idx], num_classes)
+
+                if idx == 2 and (i < save_image or save_image == -1):
+                    output_dir = "results_new"
+
+                    img = make_validation_img(inputs[0].data.cpu().numpy(),
+                                              inputs[1].data.cpu().numpy(),
+                                              sample['mask'].data.cpu().numpy(),
+                                              output[np.newaxis, :])
+                    os.makedirs(output_dir, exist_ok=True)
+                    output_file = os.path.join(output_dir, f"validate_{i}.png")
+                    cv2.imwrite(output_file, img[:, :, ::-1])
+                    print(f"imwrite at {output_file}")
+
+        # if save_image == -1:
+        #     print("Logging model predictions to W&B")
+        #     # wandb.log({"val_table/predictions_table":table}, commit=False)
+
+    for idx, input_type in enumerate(input_types + ['ens']):
+        glob, mean, iou = getScores(conf_mat[idx])
+        best_iou_note = ''
+        if iou > best_iou:
+            best_iou = iou
+            best_iou_note = '    (best)'
+        alpha = '        '
+        # if idx < len(alpha_soft):
+        #     alpha = '    %.2f' % alpha_soft[idx]
+        input_type_str = '(%s)' % input_type
+        print_log('Epoch %-4d %-7s   glob_acc=%-5.2f    mean_acc=%-5.2f    IoU=%-5.2f%s%s' %
+                  (epoch, input_type_str, glob, mean, iou, alpha, best_iou_note))
+        # val_metrics = {
+        #                 # f'val/{input_type}/val_epoch': epoch,
+        #                 f'{input_type}/global_accuracy': glob,
+        #                 f'{input_type}/mean_accuracy': mean,
+        #                 f'{input_type}/iou': iou,
+        #               }
+        # wandb.log({**val_metrics, **val_metrics})
+    # print_log('')
+    # print_log("Model Backbone{}, Image Size {}, Total flops {}, Flops by ops {}".
+    #       format(args.backbone, args.input_size, flops.total(), flops.by_operator()))
+    # iou = None
+    return iou
 
 
-# def debug_loader_shapes(val_loader):
-    print("===== Debugging Loader Shapes =====")
-    for i, sample in enumerate(val_loader):
-        print(f"\nSample index {i} has keys: {list(sample.keys())}")
-        for k, v in sample.items():
-            # 'v' might be a tensor or something similar
-            if hasattr(v, 'shape'):
-                print(f"  sample['{k}']: shape={v.shape}, dtype={v.dtype}")
-            else:
-                print(f"  sample['{k}']: type={type(v)}")
-
-        # Limit how many samples we print, so we don't spam the console
-        if i >= 2:
-            print("Stopping after 3 samples...")
-            break
-
-
-def validate(segmenter, input_types, val_loader, epoch, num_classes=-1, save_image=0, commclass=None):
+def validate_ov(input_types, val_loader, epoch, num_classes=-1, save_image=0):
     """Validate segmenter
 
     Args:
@@ -394,37 +519,55 @@ def validate(segmenter, input_types, val_loader, epoch, num_classes=-1, save_ima
     """
 
     core = ov.Core()
-    # device_name = "CPU"
-    # model_path = Path("ov_model\enc_dec_b3_torch_v1.xml")
 
-    model_map = {
-        "mit_b0": "ov_model/enc_dec_b0_torch_v1.xml",
-        "mit_b1": "ov_model/enc_dec_b1_torch_v1.xml",
-        "mit_b2": "ov_model/enc_dec_b2_torch_v1.xml",
-        "mit_b3": "ov_model/enc_dec_b3_torch_v1.xml"
-    }
-
-    # model_path = Path("ov_model\enc_dec_b3_torch_v1.xml")
-    print(f"Compiling the model from: {model_map[args.backbone]}")
     # compiled_model = core.compile_model(model=str(model_path), device_name="NPU")
     # compiled_model = core.compile_model(model=str(model_path), device_name="NPU", {ov::intel_npu::turbo(true), ov::intel_npu::tiles(6)})
+
+    if args.device == "CPU":
+        device_name = "CPU"
+        # config = {}
+    elif args.device == "GPU":
+        device_name = "GPU"
+        # config = {}
+    else:
+        device_name = "NPU"
+        # config = {"NPU_MAX_TILES": 6, "NPU_TILES": 6}
+
     compiled_model = core.compile_model(
-        model=str(model_map[args.backbone]),
-        device_name="NPU",
-        config={"NPU_MAX_TILES": 6, "NPU_TILES": 6})
-    output_idx = 2
+        model=get_model(),
+        device_name=device_name
+        # config={"NPU_MAX_TILES": 6, "NPU_TILES": 6}
+    )
 
-    # print("\n===== Debugging Model Input Shapes =====")
-    # for idx, input_info in enumerate(compiled_model.inputs):
-    #     print(f"  Input index {idx}: name='{input_info.get_any_name()}', shape={input_info.shape}")
+    global best_iou
+    conf_mat = []
+    conf_mat = np.zeros((3, num_classes, num_classes), dtype=np.int64)
 
-    # output_layer = compiled_model.outputs[0]        # AD: check if only 0 serves the purpose
+    def add_speckle_noise(tensor: torch.Tensor) -> torch.Tensor:
+        noise_level = float(args.noise)
+        noise = torch.randn_like(tensor)
+        noisy = tensor + tensor * noise * noise_level
+        return noisy
 
     for i, sample in enumerate(val_loader):
-        # For saving
+
+        if i > 10:
+            break
+
         target = sample['mask']
         inputs = [sample[key].float() for key in input_types]
-        input1, input2 = inputs
+        input1, _ = inputs
+        B, C, H, W = input1.shape          # C should be 3 for RGB
+
+        if not args.depth:
+            inputs[1] = torch.zeros(
+                (B, 3, H, W), dtype=input1.dtype, device=input1.device)
+
+        inputs[0] = add_speckle_noise(input1)
+
+        # IOU
+        gt = target[0].data.cpu().numpy().astype(np.uint8)
+        gt_idx = gt < num_classes  # Ignore every class index larger than the number of classes
 
         # ## Save for debug
         # file_path = "inputs.pth"
@@ -434,47 +577,57 @@ def validate(segmenter, input_types, val_loader, epoch, num_classes=-1, save_ima
         # DBG: with torch.no_grad():
         #     torch_output = segmenter(input1, input2)[output_idx]#.cpu().numpy()
 
-        ov_output = compiled_model(inputs={
-            "input1": input1.numpy(),
-            "input2": input2.numpy()
-        })[output_idx].data
+        start_time = time.time()
 
-        # Print sum
-        # print(np.sum(np.abs(torch_output - ov_output)))
+        infer_res = compiled_model(inputs={
+            "input1": inputs[0].numpy(),
+            "input2": inputs[1].numpy()
+        })
 
-        # 1. Prepare inputs for OpenVINO
-        # ov_inputs = {}
-        # for idx, key in enumerate(input_types):
-        #     # tensor = sample[key].float()
-        #     ov_input_name = compiled_model.inputs[idx].get_any_name()
-        #     ov_inputs[ov_input_name] = sample[key].float().cpu().numpy()
+        end_time = time.time()
 
-        # 2. Perform inference
-        # results = compiled_model(ov_inputs)
-        # output = results[output_layer][0]  # shape => [num_classes, H_pred, W_pred]
+        if args.reportpower:
+            pkg_w, sa_w = get_cpu_power()
+            print(f"CPU Package: {pkg_w:.3f} W,  NPU: {sa_w:.3f} W")
 
-        ov_output = np.asarray(ov_output)  # Convert memoryview to NumPy array
-        # .unsqueeze(0)  # Convert to PyTorch tensor
-        output = torch.tensor(ov_output)
+        iteration_time = end_time - start_time
+        print(
+            f"Iteration {i+1}/{len(val_loader.dataset)}: {iteration_time:.4f} seconds")
 
-        # output = torch.tensor(torch_output)
-        # output = torch_output
-        output = cv2.resize(output[0, :num_classes].data.cpu().numpy().transpose(1, 2, 0),
-                            target.size()[1:][::-1], interpolation=cv2.INTER_CUBIC).argmax(axis=2).astype(np.uint8)
-        if i < save_image or save_image == -1:
-            output_dir = "result"
-            img = make_validation_img(inputs[0].data.cpu().numpy(),
-                                      inputs[1].data.cpu().numpy(),
-                                      sample['mask'].data.cpu().numpy(),
-                                      output[np.newaxis, :])
-            os.makedirs(output_dir, exist_ok=True)
-            output_file = os.path.join(output_dir, f"validate_{i}.png")
-            cv2.imwrite(output_file, img[:, :, ::-1])
-            print(f"imwrite at {output_file}")
+        for idx in range(3):
 
-        # DBG:
-        if i == 5:
-            break
+            ov_output = np.asarray(infer_res[idx].data)
+            output = torch.tensor(ov_output)
+            output = cv2.resize(output[0, :num_classes].data.cpu().numpy().transpose(1, 2, 0),
+                                target.size()[1:][::-1], interpolation=cv2.INTER_CUBIC).argmax(axis=2).astype(np.uint8)
+
+            iou = confusion_matrix(gt[gt_idx], output[gt_idx], num_classes)
+            conf_mat[idx] += iou
+
+            if idx == 2 and (i < save_image or save_image == -1):
+                output_dir = "results_new"
+                img = make_validation_img(inputs[0].data.cpu().numpy(),
+                                          inputs[1].data.cpu().numpy(),
+                                          sample['mask'].data.cpu().numpy(),
+                                          output[np.newaxis, :])
+                os.makedirs(output_dir, exist_ok=True)
+                output_file = os.path.join(output_dir, f"validate_{i}.png")
+                cv2.imwrite(output_file, img[:, :, ::-1])
+                print(f"imwrite at {output_file}")
+
+    for idx, input_type in enumerate(input_types + ['ens']):
+        glob, mean, iou = getScores(conf_mat[idx])
+        best_iou_note = ''
+        if iou > best_iou:
+            best_iou = iou
+            best_iou_note = '    (best)'
+        alpha = '        '
+        # if idx < len(alpha_soft):
+        #     alpha = '    %.2f' % alpha_soft[idx]
+        input_type_str = '(%s)' % input_type
+        print_log('Epoch %-4d %-7s   glob_acc=%-5.2f    mean_acc=%-5.2f    IoU=%-5.2f%s%s' %
+                  (epoch, input_type_str, glob, mean, iou, alpha, best_iou_note))
+
         # # 3. Retrieve original color image
         # #    shape [3, H, W] → [H, W, 3]
         # color_image = sample['rgb'][0].cpu().numpy().transpose(1, 2, 0)
@@ -534,9 +687,9 @@ def validate(segmenter, input_types, val_loader, epoch, num_classes=-1, save_ima
         #     cv2.imwrite(out_file, combined[:, :, ::-1])
         #     print(f"[INFO] Segmentation result saved to {out_file}")
 
-    # Return whatever you need.
-    return None
+    return iou
 
+# -------------------Realtime----------------------------------------------
 
 def get_fixed_palette():
     """
@@ -651,19 +804,6 @@ def create_windows():
                    WINDOW_WIDTH, OFFSET_Y + WINDOW_HEIGHT)
 
 
-def get_cpu_power():
-    off, size, count = hdr.read_off, hdr.read_size, hdr.read_count
-    for i in range(count):
-        start = off + i * size
-        end = start + struct_fmt.size
-        r = struct_fmt.unpack(mem.buf[start:end])
-        label = r[3].split(b'\x00')[0].decode(errors='ignore')
-        unit = r[5].split(b'\x00')[0].decode('mbcs', errors='ignore')
-        if label == "CPU Package Power" and unit == "W":
-            return r[6]
-    return None  # Not found
-
-
 def display_windows(fps, processed_rgb, depth_image, lidar_img, color_seg, hello_img, args):
 
     # First, clear the canvas to black
@@ -675,22 +815,48 @@ def display_windows(fps, processed_rgb, depth_image, lidar_img, color_seg, hello
     WHITE = (255, 255, 255)
 
     # get current power
-    power = get_cpu_power()
-    line8 = f"Power: {power:.2f} W" if power else "Power reading not found."
+    # Get CPU and System Agent power
+    cpu_pkg_power, sys_agent_power = get_cpu_power()
 
-    # Compute FPS display (special handling for experiment "3")
-    fps_display = f"{fps * 2:.2f}" if args.experiment in ["3", "4"] else f"{fps:.2f}"
-    line7 = f"FPS: {fps_display}"
+    # Line for Power display
+    cpu_display_power_str = "Not available"
+    npu_display_power_str = "Not available"
 
-    if power:  # Avoid division by None or zero
-        fps_value = fps * 2 if args.experiment in ["3", "4"] else fps
-        ppw = fps_value / power
+    if sys_agent_power is not None:
+        npu_display_power_str = f"{sys_agent_power:.2f} W"
+
+    if cpu_pkg_power is not None and sys_agent_power is not None:
+        cpu_calc_power = cpu_pkg_power - sys_agent_power
+        cpu_display_power_str = f"{cpu_calc_power:.2f} W"
+    # else if cpu_pkg_power is not None (and sys_agent_power is None):
+        # In this case, cpu_calc_power (cpu_pkg - sys_agent) cannot be calculated.
+        # So cpu_display_power_str remains "Not available"
+
+    line8 = f"CPU Power: {cpu_display_power_str} NPU Power: {npu_display_power_str}"
+
+    # Line for FPS display
+    # FPS will be doubled if --depth arg is false
+    effective_fps = fps * 2 if not args.depth else fps
+    line7 = f"FPS: {effective_fps:.2f}"
+
+    # Line for Performance/Watt
+    # This will use the 'cpu_pkg_power' for the denominator, similar to original commented logic
+    if cpu_pkg_power is not None and cpu_pkg_power > 0:
+        ppw = effective_fps / cpu_pkg_power
         line9 = f"Performance/Watt: {ppw:.2f} FPS/W"
     else:
         line9 = "Performance/Watt: Not available"
+        
+        
+    # Line for Compute framework
+    framework_name = ""
+    if args.framework == 'ov':
+        framework_name = "OpenVINO"
+    elif args.framework == 'torch':
+        framework_name = "PyTorch" # Assuming 'torch' refers to PyTorch
 
-    # Common lines
-    line2 = f"Compute: OpenVINO on {args.device}"
+    line2 = f"Compute: {framework_name} on {args.device}"
+    
     line3 = "Modalities:"
     if args.noise == '100':
         line4 = "    RGB: OFF"
@@ -804,7 +970,7 @@ def display_windows(fps, processed_rgb, depth_image, lidar_img, color_seg, hello
     cv2.imshow('Segmentation Mask', color_seg)
 
 
-def run_realtime_inference(segmenter, input_types, epoch, num_classes=-1, save_image=0):
+def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, save_image=0):
     """
     Realtime inference function using the Intel RealSense L515.
     Optimized for CPU-only execution.
@@ -818,27 +984,20 @@ def run_realtime_inference(segmenter, input_types, epoch, num_classes=-1, save_i
         noise = np.random.randn(*image.shape)
         noisy = image + image * noise * noise_level
         return np.clip(noisy, 0, 255).astype(np.uint8)
-    
+
     def add_black_noise(image):
         return np.zeros_like(image, dtype=np.uint8)
-
     # Configure the RealSense pipeline
     pipeline = rs.pipeline()
     config = rs.config()
     config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+
     if args.depth:
         config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
     pipeline.start(config)
 
-    model_map = {
-        "mit_b0": "ov_model/enc_dec_b0_torch_v1.xml",
-        "mit_b1": "ov_model/enc_dec_b1_torch_v1.xml",
-        "mit_b2": "ov_model/enc_dec_b2_torch_v1.xml",
-        "mit_b3": "ov_model/enc_dec_b3_torch_v1.xml"
-    }
-
     core = ov.Core()
-    print(f"Compiling the model from: {model_map[args.backbone]}")
+    # print(f"Compiling the model from: {model_map[args.backbone]}")
 
     if args.device == "CPU":
         device_name = "CPU"
@@ -851,7 +1010,7 @@ def run_realtime_inference(segmenter, input_types, epoch, num_classes=-1, save_i
         config = {"NPU_MAX_TILES": 6, "NPU_TILES": 6}
 
     compiled_model = core.compile_model(
-        model=str(model_map[args.backbone]),
+        model=get_model(),
         device_name=device_name,
         config=config
     )
@@ -866,7 +1025,7 @@ def run_realtime_inference(segmenter, input_types, epoch, num_classes=-1, save_i
 
     fixed_palette = get_fixed_palette()
 
-    print("Starting realtime inference. Press ESC to exit.")
+    print("\033[92m Starting ECO realtime demo! Close window to exit.")
     prev_time = time.time()
 
     try:
@@ -950,9 +1109,110 @@ def run_realtime_inference(segmenter, input_types, epoch, num_classes=-1, save_i
             # --- Display windows ---
             display_windows(fps, processed_rgb, depth_image,
                             lidar_img, color_seg, status_image, args)
-            
-            print("Evaulation complete")
 
+            # print("Evaulation complete")
+
+            # Check for ESC key
+            if cv2.waitKey(1) & 0xFF == 27:
+                break
+
+    finally:
+        pipeline.stop()
+        cv2.destroyAllWindows()
+
+
+def run_realtime_inference_torch(segmenter, input_types, epoch, num_classes=-1, save_image=0):
+    """
+    Realtime inference function using the Intel RealSense L515.
+    Optimized for CPU-only execution.
+    """
+    import pyrealsense2 as rs
+    from torchvision import transforms
+    import time
+
+    noise_level = float(args.noise)
+
+    def add_speckle_noise(image):
+        noise = np.random.randn(*image.shape)
+        noisy = image + image * noise * noise_level
+        return np.clip(noisy, 0, 255).astype(np.uint8)
+
+    # Configure the RealSense pipeline
+    pipeline = rs.pipeline()
+    config = rs.config()
+    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+    profile = pipeline.start(config)
+
+    # Model in eval mode
+    segmenter.eval()
+
+    # Initialize OpenCV windows
+    create_windows()
+
+    # Pre-create a black canvas for displaying text messages
+    status_image = np.zeros((480, 680, 3), dtype=np.uint8)
+    lidar_img = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    fixed_palette = get_fixed_palette()
+
+    print("\033[92m Starting ECO realtime demo! Close window to exit.")
+    prev_time = time.time()
+
+    try:
+        while True:
+            frames = pipeline.wait_for_frames()
+
+            color_frame = frames.get_color_frame()
+            depth_frame = frames.get_depth_frame()
+            if not color_frame or not depth_frame:
+                continue
+
+            color_image = np.asanyarray(color_frame.get_data())
+
+            if args.depth:
+                depth_frame = frames.get_depth_frame()
+                if not depth_frame:
+                    continue
+                depth_image = np.asanyarray(depth_frame.get_data())
+            else:
+                # Create a dummy blank depth image with the same height and width as the color image.
+                dummy_depth = np.zeros(
+                    (color_image.shape[0], color_image.shape[1]), dtype=np.uint8)
+                depth_image = dummy_depth
+
+            # Expand depth to 3 channels
+            depth_image = np.repeat(depth_image[..., np.newaxis], 3, axis=2)
+
+            # Apply noise if argument is used
+            processed_rgb = add_speckle_noise(color_image)
+
+            sample = create_loaders_realtime(
+                processed_rgb, depth_image, args.input_size,
+                args.normalise_params, args.input_size_d, args.inter)
+
+            # inputs = [sample[key].float() for key in input_types]
+            inputs = [sample[key].float().unsqueeze(0) for key in input_types]
+
+            with torch.no_grad():
+                input1, input2 = inputs
+                outputs = segmenter(input1, input2)
+
+            pred = outputs[2]
+            pred = nn.functional.interpolate(
+                pred, size=color_image.shape[:2], mode='bilinear', align_corners=False)
+            pred = torch.argmax(pred, dim=1).squeeze(0).cpu().numpy()
+
+            color_seg = colorize_segmentation(pred, fixed_palette)
+
+            # --- Calculate FPS ---
+            current_time = time.time()
+            fps = 1.0 / (current_time - prev_time)
+            prev_time = current_time
+
+            # --- Display windows ---
+            display_windows(fps, processed_rgb, depth_image,
+                            lidar_img, color_seg, status_image, args)
 
             # Check for ESC key
             if cv2.waitKey(1) & 0xFF == 27:
@@ -991,8 +1251,8 @@ def main():
     if args.print_network:
         print_log('')
     # segmenter = model_init(segmenter, args.enc, len(args.input), imagenet=args.enc_pretrained)
-    print_log('Loaded Segmenter {}, ImageNet-Pre-Trained={}, #PARAMS={:3.2f}M'
-              .format(args.backbone, args.enc_pretrained, compute_params(segmenter) / 1e6))
+    # print_log('Loaded Segmenter {}, ImageNet-Pre-Trained={}, #PARAMS={:3.2f}M'
+            #   .format(args.backbone, args.enc_pretrained, compute_params(segmenter) / 1e6))
 
     # Restore if any
     best_val, epoch_start = 0, 0
@@ -1045,53 +1305,31 @@ def main():
         start = time.time()
         torch.cuda.empty_cache()
         # Create dataloaders
-        # train_loader, val_loader, commapprox = create_loaders(
-        #     DATASET, args.input, args.train_dir, args.val_dir, args.train_list, args.val_list,
-        #     args.shorter_side, args.crop_size, args.input_size, args.low_scale, args.high_scale,
-        #     args.normalise_params, args.batch_size, args.num_workers, args.ignore_label, args.input_size_d, args.inter)
+        train_loader, val_loader, commapprox = create_loaders(
+            DATASET, args.input, args.train_dir, args.val_dir, args.train_list, args.val_list,
+            args.shorter_side, args.crop_size, args.input_size, args.low_scale, args.high_scale,
+            args.normalise_params, args.batch_size, args.num_workers, args.ignore_label, args.input_size_d, args.inter)
+
+
+# ---------------------------------inference-----------------------------------------------
+
+        if args.reportpower:
+            setup_hwinfo()
 
         if args.realtime:
-            return run_realtime_inference(segmenter, args.input, 0, num_classes=args.num_classes,
-                                          save_image=args.save_image)
-
-        if args.evaluate:
-            # wandb.init(project=args.ckpt, name=f'{args.backbone}_{args.input_size},{args.input_size_d}_{args.refresh_interval}_{args.quality}',
-            #            config={'backbone': args.backbone,
-            #                    'params': sum(p.numel() for p in segmenter.parameters()),
-            #                    'batch_size': args.batch_size,
-            #                    'input size_rgb':args.input_size,
-            #                    'input size_depth':args.input_size_d,
-            #                    'inter_rgb': args.inter[0],
-            #                    'inter_depth': args.inter[1],
-            #                    'refresh_interval_rgb': args.refresh_interval[0],
-            #                    'refresh_interval_depth': args.refresh_interval[1],
-            #                    'quality_rgb': args.quality[0],
-            #                    'quality_depth': args.quality[1],
-            #                    }
-            #            )
-            # if args.refresh_interval[0] == args.refresh_interval[1]:
-            #     category = 'Both'
-            # elif args.refresh_interval[0] != 1:
-            #     category = 'Only RGB'
-            # elif args.refresh_interval[1] != 1:
-            #     category = 'Only Depth'
-
-            # args_metrics = {
-            #                 # 'memory optim': category,
-            #                 'val/refresh_interval_rgb': args.refresh_interval[0],
-            #                 'val/refresh_interval_depth': args.refresh_interval[1],
-            #                 'val/quality_rgb': args.quality[0],
-            #                 'val/quality_depth': args.quality[1]
-            #                 }
-
-            # wandb.log({**args_metrics, **args_metrics})
-            # DBG:
-            # print(commapprox.compress_size)
-
-            # debug_loader_shapes(val_loader)
-
-            return validate(segmenter, args.input, val_loader, 0, num_classes=args.num_classes,
-                            save_image=args.save_image, commclass=commapprox)
+            if args.framework == "torch":
+                return run_realtime_inference_torch(segmenter, args.input, 0, num_classes=args.num_classes,
+                                                    save_image=args.save_image)
+            elif args.framework == "ov":
+                return run_realtime_inference_ov(segmenter, args.input, 0, num_classes=args.num_classes,
+                                                 save_image=args.save_image)
+        if args.dataset:
+            if args.framework == "torch":
+                return validate_torch(segmenter, args.input, val_loader, 0, num_classes=args.num_classes,
+                                      save_image=args.save_image, commclass=commapprox)
+            elif args.framework == "ov":
+                return validate_ov(args.input, val_loader, 0, num_classes=args.num_classes,
+                                   save_image=args.save_image)
 
         # Optimisers
         print_log('Training Stage {}'.format(str(task_idx)))
