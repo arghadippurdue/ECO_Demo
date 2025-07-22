@@ -730,19 +730,28 @@ def preload_models(core, device_name="NPU"):
     from collections import OrderedDict
     model_map = MODEL_MAP = {          # pull the existing dict out of get_model()
         "mit_b2": {
-            "fp16":  "ov_model/enc_dec_b2_torch_v1_fp16.xml",
+            "fp16": "ov_model/enc_dec_b2_torch_v1_fp16.xml",    # v1 is for fp16
+            "fp16a": "ov_model/enc_dec_b2_torch_v2_fp16.xml",   # v2 is for approx. interpolate
+            "int8": "ov_model/enc_dec_b2_torch_v1_int8.xml",
+            "int8a": "ov_model/enc_dec_b2_torch_v2_int8.xml",
         },
         "mit_b3": {
-            "fp16":  "ov_model/enc_dec_b3_torch_v1_fp16.xml",
-            "fp16a": "ov_model/enc_dec_b3_torch_v2_fp16.xml", 
+            "fp16": "ov_model/enc_dec_b3_torch_v1_fp16.xml",    # v1 is for fp16
+            "fp16a": "ov_model/enc_dec_b3_torch_v2_fp16.xml",   # v2 is for approx. interpolate
+            "int8": "ov_model/enc_dec_b3_torch_v1_int8.xml",
+            "int8a": "ov_model/enc_dec_b3_torch_v2_int8.xml",
         }
     }
 
     compiled = []
+    already_done = set()
     for _, bb, qt, _ , _, _ in MODES:
+        if (bb, qt) in already_done:
+            continue
         path = model_map[bb][qt]
         print(f"[ECO] pre-compiling {bb}-{qt} …")
         compiled.append(core.compile_model(path, device_name))
+        already_done.add((bb, qt))
     return compiled
 
 def get_fixed_palette():
@@ -920,36 +929,43 @@ def display_windows(fps, processed_rgb, depth_image, lidar_img, color_seg, hello
         line4 = f"    RGB: 640x480 (Noise {'ON' if args.noise != '0' else 'OFF'})"
     line5 = f"    LiDAR: {'640x480' if args.depth else 'OFF'}"
     line6 = f"Backbone Model: {args.backbone}"
-    line7 = f"Quantization:"
+    # line7 = f"Quantization:"
 
     # Experiment-specific configurations
     experiment_config = {
         "0": {
             "line1": "Running Custom Configuration",
+            "line7": "Quantization: FP32",
             "line11": ""
         },
         "1": {
             "line1": "Running Experiment 1",
+            "line7": "Quantization: FP16",
             "line11": "Takeaway: Baseline Accuracy, Low FPS"
         },
         "2": {
             "line1": "Running Experiment 2",
+            "line7": "Quantization: FP16",
             "line11": "Takeaway: Baseline Accuracy, Moderate FPS"
         },
         "3": {
             "line1": "Running Experiment 3",
+            "line7": "Quantization: FP16",
             "line11": "Takeaway: Low Accuracy, High FPS"
         },
         "4": {
             "line1": "Running Experiment 4",
+            "line7": "Quantization: FP16",
             "line11": "Takeaway: Baseline Accuracy, High FPS"
         },
         "5": {
             "line1": "Running Experiment 5",
+            "line7": "Quantization: FP16",
             "line11": "Takeaway: Low Accuracy, moderate FPS"
         },
         "6": {
             "line1": "Running Experiment 6",
+            "line7": "Quantization: FP16 (AxPole ON)",
             "line11": "Takeaway: Moderate Accuracy & FPS"
         }
     }
@@ -1187,6 +1203,7 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
                 args.depth = MODES[current_mode][3]
                 args.noise   = MODES[current_mode][4]
                 args.experiment = MODES[current_mode][5]
+                args.backbone = MODES[current_mode][2]
                 print(f"\n>>> Switched to mode: {MODES[current_mode][0]}")
 
     finally:
