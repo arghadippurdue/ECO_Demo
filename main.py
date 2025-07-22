@@ -32,12 +32,12 @@ warnings.filterwarnings('ignore')
 # ───────────── Runtime-mode table ─────────────
 #  name ,        backbone , quant , use_depth? , RGB-noise , experiment ID , device
 MODES = [
-    ("EXP 1 B2-FP16 RGB-D"   , "mit_b3", "fp16" ,  False , 0.5 , "1", "CPU"),
+    ("EXP 1 B2-FP16 RGB-D"   , "mit_b3", "fp16" ,  True , 0.5 , "1", "CPU"),
     ("EXP 2 B3-FP16 RGB-D" , "mit_b3", "fp16" ,  True , 0.5 , "2", "NPU"),
     ("EXP 3 B2-FP16 RGB"   , "mit_b2", "fp16" ,  False , 0.5 , "3", "NPU"),
     ("EXP 4 B3-FP16 RGB"  , "mit_b3", "fp16",  False , 0.5 , "4", "NPU"),
     ("EXP 5 B2-FP16 Depth", "mit_b2", "fp16",  True , 99 , "5", "NPU"),
-    ("EXP 6 B3-FP16a Depth", "mit_b3", "fp16a",  True , 99 , "6"),
+    ("EXP 6 B3-FP16a Depth", "mit_b3", "fp16a",  True , 99 , "6", "NPU"),
 
 ]
 
@@ -752,7 +752,7 @@ def preload_models(core):
     cache: dict[tuple[str, str, str], ov.CompiledModel] = {}
     compiled_refs: list[ov.CompiledModel] = []
 
-    for _, bb, qt, _depth, _noise, dev in MODES:
+    for _, bb, qt, _depth, _noise,_, dev in MODES:
         key = (bb, qt, dev)
         if key not in cache:
             path = MODEL_MAP[bb][qt]
@@ -990,8 +990,8 @@ def display_windows(fps, processed_rgb, depth_image, lidar_img, color_seg, hello
     })
 
     lines = [
-        config["line1"], line2, line3, line4, line5, line6,line7,
-        config["line8"], line9, line10, config["line11"]
+        config["line1"], line2, line3, line4, line5, line6,config["line8"],line7,
+        line9, line10, config["line11"]
     ]
 
     # Font and spacing
@@ -1098,7 +1098,7 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
     #     device_name=device_name,
     #     config=config
     # )
-    compiled_models = preload_models(core, device_name)   # NEW
+    compiled_models = preload_models(core)   # NEW
     current_mode = 0
     output_idx = 2
 
