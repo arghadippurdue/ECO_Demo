@@ -978,7 +978,7 @@ def display_windows(fps, processed_rgb, depth_image, lidar_img, color_seg, hello
 
     lines = [
         config["line1"], line2, line3, line4, line5, line6,
-        line7, line9, line10, config["line11"]
+        config["line7"], line9, line10, config["line11"]
     ]
 
     # Font and spacing
@@ -1203,7 +1203,7 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
                 args.depth = MODES[current_mode][3]
                 args.noise   = MODES[current_mode][4]
                 args.experiment = MODES[current_mode][5]
-                args.backbone = MODES[current_mode][2]
+                args.backbone = MODES[current_mode][1]
                 print(f"\n>>> Switched to mode: {MODES[current_mode][0]}")
 
     finally:
