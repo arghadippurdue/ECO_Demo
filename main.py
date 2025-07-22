@@ -29,6 +29,16 @@ from multiprocessing import shared_memory
 from construct import Struct, Int32un, Long
 warnings.filterwarnings('ignore')
 
+# ───────────── Runtime-mode table ─────────────
+#  name ,        backbone , quant , use_depth? , RGB-noise , experiment ID
+MODES = [
+    ("EXP 2 B3-FP16 RGB-D" , "mit_b3", "fp16" ,  True , 0.5 , "2"),
+    ("EXP 3 B2-FP16 RGB"   , "mit_b2", "fp16" ,  False , 0.5 , "3"),
+    ("EXP 4 B3-FP16 RGB"  , "mit_b3", "fp16",  False , 0.5 , "4"),
+    ("EXP 5 B2-FP16 Depth", "mit_b2", "fp16",  True , 99 , "5"),
+    ("EXP 6 B3-FP16a Depth", "mit_b3", "fp16a",  True , 99 , "6"),
+
+]
 
 # Setup once
 sensor_struct = Struct(
@@ -711,6 +721,30 @@ def validate_ov(input_types, val_loader, epoch, num_classes=-1, save_image=0):
 
 # -------------------Realtime----------------------------------------------
 
+def preload_models(core, device_name="NPU"):
+    """
+    Compile every (backbone, quant) pair once and keep the handles.
+    Returns a list aligned with `MODES`.
+    """
+    # Re-use the same MODEL_MAP dict that `get_model()` already has
+    from collections import OrderedDict
+    model_map = MODEL_MAP = {          # pull the existing dict out of get_model()
+        "mit_b2": {
+            "fp16":  "ov_model/enc_dec_b2_torch_v1_fp16.xml",
+        },
+        "mit_b3": {
+            "fp16":  "ov_model/enc_dec_b3_torch_v1_fp16.xml",
+            "fp16a": "ov_model/enc_dec_b3_torch_v2_fp16.xml", 
+        }
+    }
+
+    compiled = []
+    for _, bb, qt, _ , _, _ in MODES:
+        path = model_map[bb][qt]
+        print(f"[ECO] pre-compiling {bb}-{qt} …")
+        compiled.append(core.compile_model(path, device_name))
+    return compiled
+
 def get_fixed_palette():
     """
     Generates a fixed palette mapping each class index to a unique color.
@@ -998,11 +1032,11 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
     import pyrealsense2 as rs
     import time
 
-    noise_level = float(args.noise)
+    # noise_level = float(args.noise)
 
-    def add_speckle_noise(image):
+    def add_speckle_noise(image,level):
         noise = np.random.randn(*image.shape)
-        noisy = image + image * noise * noise_level
+        noisy = image + image * noise * level
         return np.clip(noisy, 0, 255).astype(np.uint8)
 
     def add_black_noise(image):
@@ -1029,11 +1063,13 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
         device_name = "NPU"
         config = {"NPU_MAX_TILES": 6, "NPU_TILES": 6}
 
-    compiled_model = core.compile_model(
-        model=get_model(),
-        device_name=device_name,
-        config=config
-    )
+    # compiled_model = core.compile_model(
+    #     model=get_model(),
+    #     device_name=device_name,
+    #     config=config
+    # )
+    compiled_models = preload_models(core, device_name)   # NEW
+    current_mode = 0
     output_idx = 2
 
     # Initialize OpenCV windows
@@ -1050,6 +1086,7 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
 
     try:
         while True:
+            cm = compiled_models[current_mode]
             frames = pipeline.wait_for_frames()
 
             color_frame = frames.get_color_frame()
@@ -1073,10 +1110,11 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
             depth_image = np.repeat(depth_image[..., np.newaxis], 3, axis=2)
 
             # Apply noise if argument is used
-            if args.noise == "100":
+            noise_val = MODES[current_mode][4]
+            if noise_val == "100":
                 processed_rgb = add_black_noise(color_image)
             else:
-                processed_rgb = add_speckle_noise(color_image)
+                processed_rgb = add_speckle_noise(color_image,noise_val)
 
             sample = create_loaders_realtime(
                 processed_rgb, depth_image, args.input_size,
@@ -1088,7 +1126,7 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
                 tensor = sample[key].float().unsqueeze(
                     0)  # shape: [1, C, H, W]
                 # Map the i-th model input name to the numpy array
-                input_name = compiled_model.inputs[i].get_any_name()
+                input_name = cm.inputs[i].get_any_name()
                 inputs[input_name] = tensor.cpu().numpy()
 
             # Run inference using the OpenVINO compiled model
@@ -1097,7 +1135,10 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
             #     "input1": input1.numpy(),
             #     "input2": input2.numpy()
             # })[output_idx].data
-            ov_output = compiled_model(inputs=inputs)[output_idx].data
+
+            # cm = compiled_models[current_mode]                  # NEW
+            ov_output = cm(inputs=inputs)[output_idx].data      # NEW
+            # ov_output = compiled_model(inputs=inputs)[output_idx].data
 
             ov_output = np.asarray(ov_output)
 
@@ -1133,8 +1174,19 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
             # print("Evaulation complete")
 
             # Check for ESC key
-            if cv2.waitKey(1) & 0xFF == 27:
+            # if cv2.waitKey(1) & 0xFF == 27:
+            #     break
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:                      # ESC → quit
                 break
+            elif key == ord('m'):              # NEW: cycle runtime mode
+                current_mode = (current_mode + 1) % len(MODES)
+                # Toggle depth input on-the-fly
+                args.depth = MODES[current_mode][3]
+                args.noise   = MODES[current_mode][4]
+                args.experiment = MODES[current_mode][5]
+                print(f"\n>>> Switched to mode: {MODES[current_mode][0]}")
 
     finally:
         pipeline.stop()

@@ -12,7 +12,7 @@ if %ERRORLEVEL% neq 0 (
 
 REM Change to the script directory
 echo Changing directory to C:\Users\intel\ECO\ECO_Demo...
-cd /D C:\Users\intel\ECO\ECO_Demo
+cd /D C:\Users\eslpu\ECO_Demo
 
 REM Check if directory change was successful
 if %ERRORLEVEL% neq 0 (
