@@ -163,15 +163,35 @@ def get_arguments():
 
 def get_model():
     model_map = {
-        "mit_b2": "ov_model/enc_dec_b2_torch_v1.xml",
-        "mit_b3": "ov_model/enc_dec_b3_torch_v1.xml"
+        # "mit_b0": {
+        #     "fp16": "ov_model/enc_dec_b0_torch_v1_fp16.xml",
+        #     "fp32": "ov_model/enc_dec_b0_torch_v1_fp32.xml",
+        #     "int8": "ov_model/enc_dec_b0_torch_v1_int8.xml",
+        # },
+        # "mit_b1": {
+        #     "fp16": "ov_model/enc_dec_b1_torch_v1_fp16.xml",
+        #     "fp32": "ov_model/enc_dec_b1_torch_v1_fp32.xml",
+        #     "int8": "ov_model/enc_dec_b1_torch_v1_int8.xml",
+        # },
+        "mit_b2": {
+            "fp16": "ov_model/enc_dec_b2_torch_v1_fp16.xml",    # v1 is for fp16
+            "fp16a": "ov_model/enc_dec_b2_torch_v2_fp16.xml",   # v2 is for approx. interpolate
+            "int8": "ov_model/enc_dec_b2_torch_v1_int8.xml",
+            "int8a": "ov_model/enc_dec_b2_torch_v2_int8.xml",
+        },
+        "mit_b3": {
+            "fp16": "ov_model/enc_dec_b3_torch_v1_fp16.xml",    # v1 is for fp16
+            "fp16a": "ov_model/enc_dec_b3_torch_v2_fp16.xml",   # v2 is for approx. interpolate
+            "int8": "ov_model/enc_dec_b3_torch_v1_int8.xml",
+            "int8a": "ov_model/enc_dec_b3_torch_v2_int8.xml",
+        }
     }
 
     backbone_key = args.backbone
-    # quantization = args.quantization
+    quantization = args.quantization
 
     try:
-        model_path = model_map[backbone_key]
+        model_path = model_map[backbone_key][quantization]
         print(f"Compiling the model from: {model_path}")
         return model_path
     except KeyError:
