@@ -723,36 +723,38 @@ def validate_ov(input_types, val_loader, epoch, num_classes=-1, save_image=0):
 
 def preload_models(core, device_name="NPU"):
     """
-    Compile every (backbone, quant) pair once and keep the handles.
-    Returns a list aligned with `MODES`.
+    Return a list whose length == len(MODES).
+    The same CompiledModel object is reused for modes that share a model.
     """
-    # Re-use the same MODEL_MAP dict that `get_model()` already has
-    from collections import OrderedDict
-    model_map = MODEL_MAP = {          # pull the existing dict out of get_model()
+    MODEL_MAP = {
         "mit_b2": {
-            "fp16": "ov_model/enc_dec_b2_torch_v1_fp16.xml",    # v1 is for fp16
-            "fp16a": "ov_model/enc_dec_b2_torch_v2_fp16.xml",   # v2 is for approx. interpolate
-            "int8": "ov_model/enc_dec_b2_torch_v1_int8.xml",
+            "fp16" : "ov_model/enc_dec_b2_torch_v1_fp16.xml",
+            "fp16a": "ov_model/enc_dec_b2_torch_v2_fp16.xml",
+            "int8" : "ov_model/enc_dec_b2_torch_v1_int8.xml",
             "int8a": "ov_model/enc_dec_b2_torch_v2_int8.xml",
         },
         "mit_b3": {
-            "fp16": "ov_model/enc_dec_b3_torch_v1_fp16.xml",    # v1 is for fp16
-            "fp16a": "ov_model/enc_dec_b3_torch_v2_fp16.xml",   # v2 is for approx. interpolate
-            "int8": "ov_model/enc_dec_b3_torch_v1_int8.xml",
+            "fp16" : "ov_model/enc_dec_b3_torch_v1_fp16.xml",
+            "fp16a": "ov_model/enc_dec_b3_torch_v2_fp16.xml",
+            "int8" : "ov_model/enc_dec_b3_torch_v1_int8.xml",
             "int8a": "ov_model/enc_dec_b3_torch_v2_int8.xml",
-        }
+        },
     }
 
-    compiled = []
-    already_done = set()
-    for _, bb, qt, _ , _, _ in MODES:
-        if (bb, qt) in already_done:
-            continue
-        path = model_map[bb][qt]
-        print(f"[ECO] pre-compiling {bb}-{qt} …")
-        compiled.append(core.compile_model(path, device_name))
-        already_done.add((bb, qt))
-    return compiled
+    compiled_cache: dict[tuple[str, str], ov.CompiledModel] = {}
+    compiled_refs:  list[ov.CompiledModel]                   = []
+
+    for _, bb, qt, *_ in MODES:                # walk through every scenario
+        key = (bb, qt)
+        if key not in compiled_cache:          # compile this pair exactly once
+            path = MODEL_MAP[bb][qt]
+            print(f"[ECO] pre-compiling {bb}-{qt} …")
+            compiled_cache[key] = core.compile_model(path, device_name)
+
+        compiled_refs.append(compiled_cache[key])  # reuse handle
+
+    return compiled_refs
+
 
 def get_fixed_palette():
     """
