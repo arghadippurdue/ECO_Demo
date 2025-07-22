@@ -1112,6 +1112,8 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
     fixed_palette = get_fixed_palette()
 
     print("\033[92m Starting ECO realtime demo! Close window to exit.")
+    print("\033[92m Press 'm' to switch to next mode")
+    print("\033[92m Press 'n' to switch to previous mode")
     prev_time = time.time()
 
     try:
@@ -1212,6 +1214,8 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
                 break
             elif key == ord('m'):              # NEW: cycle runtime mode
                 current_mode = (current_mode + 1) % len(MODES)
+            elif key == ord('n'):
+                current_mode = (current_mode - 1) % len(MODES)
                 # Toggle depth input on-the-fly
                 args.depth = MODES[current_mode][3]
                 args.noise   = MODES[current_mode][4]
