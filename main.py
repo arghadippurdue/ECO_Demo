@@ -30,12 +30,13 @@ from construct import Struct, Int32un, Long
 warnings.filterwarnings('ignore')
 
 # ───────────── Runtime-mode table ─────────────
-#  name ,        backbone , quant , use_depth? , RGB-noise , experiment ID
+#  name ,        backbone , quant , use_depth? , RGB-noise , experiment ID , device
 MODES = [
-    ("EXP 2 B3-FP16 RGB-D" , "mit_b3", "fp16" ,  True , 0.5 , "2"),
-    ("EXP 3 B2-FP16 RGB"   , "mit_b2", "fp16" ,  False , 0.5 , "3"),
-    ("EXP 4 B3-FP16 RGB"  , "mit_b3", "fp16",  False , 0.5 , "4"),
-    ("EXP 5 B2-FP16 Depth", "mit_b2", "fp16",  True , 99 , "5"),
+    ("EXP 1 B2-FP16 RGB-D"   , "mit_b3", "fp16" ,  False , 0.5 , "1", "CPU"),
+    ("EXP 2 B3-FP16 RGB-D" , "mit_b3", "fp16" ,  True , 0.5 , "2", "NPU"),
+    ("EXP 3 B2-FP16 RGB"   , "mit_b2", "fp16" ,  False , 0.5 , "3", "NPU"),
+    ("EXP 4 B3-FP16 RGB"  , "mit_b3", "fp16",  False , 0.5 , "4", "NPU"),
+    ("EXP 5 B2-FP16 Depth", "mit_b2", "fp16",  True , 99 , "5", "NPU"),
     ("EXP 6 B3-FP16a Depth", "mit_b3", "fp16a",  True , 99 , "6"),
 
 ]
@@ -721,10 +722,10 @@ def validate_ov(input_types, val_loader, epoch, num_classes=-1, save_image=0):
 
 # -------------------Realtime----------------------------------------------
 
-def preload_models(core, device_name="NPU"):
+def preload_models(core):
     """
-    Return a list whose length == len(MODES).
-    The same CompiledModel object is reused for modes that share a model.
+    Compile each (backbone, quant, device) only once.
+    Returns a list aligned 1-to-1 with MODES.
     """
     MODEL_MAP = {
         "mit_b2": {
@@ -741,17 +742,27 @@ def preload_models(core, device_name="NPU"):
         },
     }
 
-    compiled_cache: dict[tuple[str, str], ov.CompiledModel] = {}
-    compiled_refs:  list[ov.CompiledModel]                   = []
+    # device-specific compile options
+    DEVICE_CFG = {
+        "CPU": {},
+        "GPU": {},
+        "NPU": {"NPU_MAX_TILES": 6, "NPU_TILES": 6},
+    }
 
-    for _, bb, qt, *_ in MODES:                # walk through every scenario
-        key = (bb, qt)
-        if key not in compiled_cache:          # compile this pair exactly once
+    cache: dict[tuple[str, str, str], ov.CompiledModel] = {}
+    compiled_refs: list[ov.CompiledModel] = []
+
+    for _, bb, qt, _depth, _noise, dev in MODES:
+        key = (bb, qt, dev)
+        if key not in cache:
             path = MODEL_MAP[bb][qt]
-            print(f"[ECO] pre-compiling {bb}-{qt} …")
-            compiled_cache[key] = core.compile_model(path, device_name)
-
-        compiled_refs.append(compiled_cache[key])  # reuse handle
+            print(f"[ECO] pre-compiling {bb}-{qt} on {dev} …")
+            cache[key] = core.compile_model(
+                model=path,
+                device_name=dev,
+                config=DEVICE_CFG.get(dev, {})
+            )
+        compiled_refs.append(cache[key])  # reuse handle
 
     return compiled_refs
 
@@ -937,37 +948,37 @@ def display_windows(fps, processed_rgb, depth_image, lidar_img, color_seg, hello
     experiment_config = {
         "0": {
             "line1": "Running Custom Configuration",
-            "line7": "Quantization: FP32",
+            "line8": "Quantization: FP32",
             "line11": ""
         },
         "1": {
             "line1": "Running Experiment 1",
-            "line7": "Quantization: FP16",
+            "line8": "Quantization: FP16",
             "line11": "Takeaway: Baseline Accuracy, Low FPS"
         },
         "2": {
             "line1": "Running Experiment 2",
-            "line7": "Quantization: FP16",
+            "line8": "Quantization: FP16",
             "line11": "Takeaway: Baseline Accuracy, Moderate FPS"
         },
         "3": {
             "line1": "Running Experiment 3",
-            "line7": "Quantization: FP16",
+            "line8": "Quantization: FP16",
             "line11": "Takeaway: Low Accuracy, High FPS"
         },
         "4": {
             "line1": "Running Experiment 4",
-            "line7": "Quantization: FP16",
+            "line8": "Quantization: FP16",
             "line11": "Takeaway: Baseline Accuracy, High FPS"
         },
         "5": {
             "line1": "Running Experiment 5",
-            "line7": "Quantization: FP16",
+            "line8": "Quantization: FP16",
             "line11": "Takeaway: Low Accuracy, moderate FPS"
         },
         "6": {
             "line1": "Running Experiment 6",
-            "line7": "Quantization: FP16 (AxPole ON)",
+            "line8": "Quantization: FP16 (AxPole ON)",
             "line11": "Takeaway: Moderate Accuracy & FPS"
         }
     }
@@ -979,8 +990,8 @@ def display_windows(fps, processed_rgb, depth_image, lidar_img, color_seg, hello
     })
 
     lines = [
-        config["line1"], line2, line3, line4, line5, line6,
-        config["line7"], line9, line10, config["line11"]
+        config["line1"], line2, line3, line4, line5, line6,line7,
+        config["line8"], line9, line10, config["line11"]
     ]
 
     # Font and spacing
@@ -1206,6 +1217,8 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
                 args.noise   = MODES[current_mode][4]
                 args.experiment = MODES[current_mode][5]
                 args.backbone = MODES[current_mode][1]
+                args.device = MODES[current_mode][6]
+
                 print(f"\n>>> Switched to mode: {MODES[current_mode][0]}")
 
     finally:
