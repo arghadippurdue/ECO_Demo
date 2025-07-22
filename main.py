@@ -886,7 +886,7 @@ def display_windows(fps, processed_rgb, depth_image, lidar_img, color_seg, hello
         # In this case, cpu_calc_power (cpu_pkg - sys_agent) cannot be calculated.
         # So cpu_display_power_str remains "Not available"
 
-    line8 = f"CPU Power: {cpu_display_power_str} NPU Power: {npu_display_power_str}"
+    line9 = f"CPU Power: {cpu_display_power_str} NPU Power: {npu_display_power_str}"
 
     # Line for FPS display
     # FPS will be doubled if --depth arg is false
@@ -897,9 +897,9 @@ def display_windows(fps, processed_rgb, depth_image, lidar_img, color_seg, hello
     # This will use the 'cpu_pkg_power' for the denominator, similar to original commented logic
     if cpu_pkg_power is not None and cpu_pkg_power > 0:
         ppw = effective_fps / cpu_pkg_power
-        line9 = f"Performance/Watt: {ppw:.2f} FPS/W"
+        line10 = f"Performance/Watt: {ppw:.2f} FPS/W"
     else:
-        line9 = "Performance/Watt: Not available"
+        line10 = "Performance/Watt: Not available"
         
         
     # Line for Compute framework
@@ -914,54 +914,55 @@ def display_windows(fps, processed_rgb, depth_image, lidar_img, color_seg, hello
     line3 = "Modalities:"
     if args.noise == '100':
         line4 = "    RGB: OFF"
-    elif args.noise == '99':
+    elif args.noise == 99:
         line4 = "    RGB: 640x480 (Sensor Failure)"
     else:
         line4 = f"    RGB: 640x480 (Noise {'ON' if args.noise != '0' else 'OFF'})"
     line5 = f"    LiDAR: {'640x480' if args.depth else 'OFF'}"
     line6 = f"Backbone Model: {args.backbone}"
+    line7 = f"Quantization:"
 
     # Experiment-specific configurations
     experiment_config = {
         "0": {
             "line1": "Running Custom Configuration",
-            "line10": ""
+            "line11": ""
         },
         "1": {
             "line1": "Running Experiment 1",
-            "line10": "Takeaway: Baseline Accuracy, Low FPS"
+            "line11": "Takeaway: Baseline Accuracy, Low FPS"
         },
         "2": {
             "line1": "Running Experiment 2",
-            "line10": "Takeaway: Baseline Accuracy, Moderate FPS"
+            "line11": "Takeaway: Baseline Accuracy, Moderate FPS"
         },
         "3": {
             "line1": "Running Experiment 3",
-            "line10": "Takeaway: Low Accuracy, High FPS"
+            "line11": "Takeaway: Low Accuracy, High FPS"
         },
         "4": {
             "line1": "Running Experiment 4",
-            "line10": "Takeaway: Baseline Accuracy, High FPS"
+            "line11": "Takeaway: Baseline Accuracy, High FPS"
         },
         "5": {
             "line1": "Running Experiment 5",
-            "line10": "Takeaway: Low Accuracy, moderate FPS"
+            "line11": "Takeaway: Low Accuracy, moderate FPS"
         },
         "6": {
             "line1": "Running Experiment 6",
-            "line10": "Takeaway: Moderate Accuracy & FPS"
+            "line11": "Takeaway: Moderate Accuracy & FPS"
         }
     }
 
     config = experiment_config.get(args.experiment, {
         "line1": "Running Unknown Experiment",
-        "line9": "",
-        "line10": ""
+        "line10": "",
+        "line11": ""
     })
 
     lines = [
         config["line1"], line2, line3, line4, line5, line6,
-        line7, line8, line9, config["line10"]
+        line7, line9, line10, config["line11"]
     ]
 
     # Font and spacing
