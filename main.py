@@ -1216,14 +1216,16 @@ def run_realtime_inference_ov(segmenter, input_types, epoch, num_classes=-1, sav
                 current_mode = (current_mode + 1) % len(MODES)
             elif key == ord('n'):
                 current_mode = (current_mode - 1) % len(MODES)
+            else:
+                continue
                 # Toggle depth input on-the-fly
-                args.depth = MODES[current_mode][3]
-                args.noise   = MODES[current_mode][4]
-                args.experiment = MODES[current_mode][5]
-                args.backbone = MODES[current_mode][1]
-                args.device = MODES[current_mode][6]
+            args.depth = MODES[current_mode][3]
+            args.noise   = MODES[current_mode][4]
+            args.experiment = MODES[current_mode][5]
+            args.backbone = MODES[current_mode][1]
+            args.device = MODES[current_mode][6]
 
-                print(f"\n>>> Switched to mode: {MODES[current_mode][0]}")
+            print(f"\n>>> Switched to mode: {MODES[current_mode][0]}")
 
     finally:
         pipeline.stop()
